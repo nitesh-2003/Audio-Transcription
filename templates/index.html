@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Audio to Text Converter</title>
+    <link rel="stylesheet" type="text/css" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+    <div class="container">
+        <h1>Audio to Text Converter</h1>
+        <div class="buttons">
+            <button id="startButton">Start Speaking</button>
+            <button id="stopButton" disabled>Stop</button>
+            <button id="saveButton" disabled>Save Transcription</button>
+            <button id="clearButton">Clear</button>
+            <input type="file" id="uploadInput" accept="audio/*" style="display: none;">
+            <button id="uploadButton">Upload</button>
+        </div>
+        <p id="status"></p>
+        <p id="result"></p>
+    </div>
+
+    <script>
+        let mediaRecorder;
+        let audioChunks = [];
+        let transcription = '';
+
+        function encodeWAV(samples, sampleRate) {
+            const buffer = new ArrayBuffer(44 + samples.length * 2);
+            const view = new DataView(buffer);
+
+            function writeString(view, offset, string) {
+                for (let i = 0; i < string.length; i++) {
+                    view.setUint8(offset + i, string.charCodeAt(i));
+                }
+            }
+
+            function floatTo16BitPCM(output, offset, input) {
+                for (let i = 0; i < input.length; i++, offset += 2) {
+                    const s = Math.max(-1, Math.min(1, input[i]));
+                    output.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
+                }
+            }
+
+            writeString(view, 0, 'RIFF');
+            view.setUint32(4, 36 + samples.length * 2, true);
+            writeString(view, 8, 'WAVE');
+            writeString(view, 12, 'fmt ');
+            view.setUint32(16, 16, true);
+            view.setUint16(20, 1, true);
+            view.setUint16(22, 1, true);
+            view.setUint32(24, sampleRate, true);
+            view.setUint32(28, sampleRate * 2, true);
+            view.setUint16(32, 2, true);
+            view.setUint16(34, 16, true);
+            writeString(view, 36, 'data');
+            view.setUint32(40, samples.length * 2, true);
+
+            floatTo16BitPCM(view, 44, samples);
+
+            return new Blob([view], { type: 'audio/wav' });
+        }
+
+        document.getElementById('startButton').onclick = () => {
+    // Clear previous transcription before starting a new one
+    transcription = '';
+    document.getElementById('result').textContent = '';
+
+    navigator.mediaDevices.getUserMedia({ audio: true })
+        .then(stream => {
+            mediaRecorder = new MediaRecorder(stream);
+            mediaRecorder.start();
+            document.getElementById('status').textContent = "Recording...";
+            document.getElementById('startButton').disabled = true;
+            document.getElementById('stopButton').disabled = false;
+            document.getElementById('saveButton').disabled = true;
+
+            audioChunks = []; // Reset the audioChunks array
+
+            mediaRecorder.ondataavailable = event => {
+                audioChunks.push(event.data);
+            };
+
+            mediaRecorder.onstop = () => {
+                const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                const reader = new FileReader();
+                reader.readAsArrayBuffer(audioBlob);
+                reader.onloadend = () => {
+                    const audioContext = new AudioContext();
+                    audioContext.decodeAudioData(reader.result, buffer => {
+                        const samples = buffer.getChannelData(0);
+                        const wavBlob = encodeWAV(samples, buffer.sampleRate);
+                        const formData = new FormData();
+                        formData.append('audio', wavBlob, 'audio.wav');
+
+                        fetch('/convert', {
+                            method: 'POST',
+                            body: formData
+                        })
+                        .then(response => response.json())
+                        .then(data => {
+                            if (data.text) {
+                                transcription = data.text;
+                                document.getElementById('result').textContent = "Transcription: " + data.text;
+                                document.getElementById('saveButton').disabled = false;
+                            } else {
+                                document.getElementById('result').textContent = "Error: " + data.error;
+                            }
+                            document.getElementById('status').textContent = "";
+                        });
+                    });
+                };
+            };
+        });
+};
+
+
+        document.getElementById('stopButton').onclick = () => {
+            mediaRecorder.stop();
+            document.getElementById('status').textContent = "Processing...";
+            document.getElementById('startButton').disabled = false;
+            document.getElementById('stopButton').disabled = true;
+        };
+
+        document.getElementById('saveButton').onclick = () => {
+            if (transcription) {
+                const formData = new FormData();
+                formData.append('text', transcription);
+
+                fetch('/save', {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success) {
+                        alert('Transcription saved successfully');
+                    } else {
+                        alert('Error saving transcription');
+                    }
+                });
+            }
+        };
+
+        document.getElementById('clearButton').onclick = () => {
+            transcription = '';
+            document.getElementById('result').textContent = '';
+            document.getElementById('saveButton').disabled = true;
+            document.getElementById('startButton').disabled = false;
+            document.getElementById('stopButton').disabled = true;
+        document.getElementById('status').textContent = '';
+        };
+
+
+        document.getElementById('uploadButton').onclick = () => {
+            document.getElementById('uploadInput').click();
+        };
+
+        document.getElementById('uploadInput').onchange = (event) => {
+            const file = event.target.files[0];
+            if (file) {
+                const formData = new FormData();
+                formData.append('audio', file);
+
+                fetch('/convert', {
+                    method: 'POST',
+                    body: formData
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.text) {
+                        transcription = data.text;
+                        document.getElementById('result').textContent = "Transcription: " + data.text;
+                        document.getElementById('saveButton').disabled = false;
+                    } else {
+                        document.getElementById('result').textContent = "Error: " + data.error;
+                    }
+                    document.getElementById('status').textContent = "";
+                });
+            }
+        };
+    </script>
+</body>
+</html>
